@@ -193,8 +193,8 @@ tt_transit = travel_time_matrix(
   origins = block_points,
   destinations = park_points,
   mode = c("WALK", "TRANSIT"),
-  departure_datetime = ymd_hms("2026-05-01 08:00:00"),
-  time_window =
+  departure_datetime = ymd_hms("2026-05-01 09:00:00"),
+  time_window = 120
 )
 
 transit_access = tt_transit |>
@@ -213,7 +213,7 @@ tt_car = travel_time_matrix(
   origins = block_points,
   destinations = park_points,
   mode = c("CAR"),
-  departure_datetime = ymd_hms("2026-05-01 08:00:00")
+  departure_datetime = ymd_hms("2026-05-01 09:00:00")
 )
 
 car_access = tt_car |>
@@ -231,7 +231,7 @@ tt_walk = travel_time_matrix(
   origins = block_points,
   destinations = park_points,
   mode = c("WALK"),
-  departure_datetime = ymd_hms("2026-05-01 08:00:00")
+  departure_datetime = ymd_hms("2026-05-01 09:00:00")
 )
 
 walk_access = tt_walk |>
