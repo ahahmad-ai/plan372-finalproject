@@ -1,0 +1,296 @@
+---
+title: "Assessing Park Access in Raleigh, NC"
+author: "Amala Ahmad"
+output: pdf_document
+---
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+rJavaEnv::use_java(21)
+```
+
+```{r}
+options(java.parameters ="-Xmx4G")
+options(lehdr_use_cache = TRUE) 
+```
+
+```{r}
+library(r5r)
+library(tidyverse)
+library(ggspatial)
+library(sf)
+library(lehdr)
+library(tigris)
+```
+## Building Network
+
+
+
+```{r}
+baseline = build_network(here::here("data/baseline"))
+
+
+#need to determine if i'm gonna do scenario with imaginary new park -> idk if i know how to do that
+```
+
+```{r}
+block_groups = st_read(here::here("data/baseline/orange_durham_wake_block_groups.gpkg"))
+census = read.csv(here::here("data/baseline/triangle_census.csv"))
+```
+```{r}
+census = census |>
+  mutate(GEOID = as.character(GEOID))
+
+block_groups = block_groups |>
+  mutate(GEOID = as.character(GEOID))
+
+block_census = block_groups |>
+  left_join(census, by=("GEOID"))
+```
+
+```{r}
+parks = st_read(here::here("data/baseline/raleighparks.gpkg"))
+highways = st_read(here::here("data/baseline/major_highways_osm.gpkg"))
+```
+
+```{r}
+parks = st_transform(parks, 32119)
+block_census = st_transform(block_census, 32119)
+highways = st_transform(highways, 32119)
+```
+
+```{r}
+block_census |>
+  summarize( 
+    min_value = min(INTPTLAT, na.rm=TRUE),
+    max_value = max(INTPTLAT, na.rm=TRUE)) |>
+  ungroup()
+```
+
+```{r}
+block_census |>
+  summarize( 
+    min_value = min(INTPTLON, na.rm=TRUE),
+    max_value = max(INTPTLON, na.rm=TRUE)) |>
+  ungroup()
+```
+
+@fig-1 shows a map of all City of Raleigh Parks
+```{r}
+#| fig-cap: City of Raleigh Parks
+#| label: fig-1
+ggplot() +
+  annotation_spatial(data=highways) +
+  annotation_spatial(data=parks, color="red", fill="red")+
+  theme_minimal()+
+  theme(
+    axis.text = element_blank(),
+    panel.grid = element_blank()) + shadow_spatial(st_bbox(c(xmin=-079.2360458, xmax=-078.2797890, ymin=36.2128560, ymax=35.5418073), crs=4326))
+ 
+```
+
+Creating Parks as Destinations
+```{r}
+park_points = parks |>
+  st_point_on_surface() |>
+  st_transform(4326) |>
+  mutate(id = row_number())
+
+block_points = block_census |>
+    st_point_on_surface() |>
+  st_transform(4326) |>
+  mutate(id = GEOID)
+```
+TRAVEL TIME MATRIX
+
+```{r}
+tt_transit = travel_time_matrix(
+  r5r_core = baseline,
+  origins = block_points,
+  destinations = park_points,
+  mode = c("WALK", "TRANSIT"),
+  departure_datetime = ymd_hms("2026-05-01 08:00:00")
+)
+
+transit_access = tt_transit |>
+  group_by(from_id) |>
+  summarize(transit_access_30 = any(travel_time_p50 <=30, na.rm = TRUE))
+
+block_census = block_census |>
+  left_join(transit_access, by = c("GEOID" = "from_id"))
+```
+
+
+
+```{r}
+tt_car = travel_time_matrix(
+  r5r_core = baseline,
+  origins = block_points,
+  destinations = park_points,
+  mode = c("CAR"),
+  departure_datetime = ymd_hms("2026-05-01 08:00:00")
+)
+
+car_access = tt_car |>
+  group_by(from_id) |>
+  summarize(car_access_30 = any(travel_time_p50 <=30, na.rm = TRUE))
+
+block_census = block_census |>
+  left_join(car_access, by = c("GEOID" = "from_id"))
+```
+
+
+```{r}
+tt_walk = travel_time_matrix(
+  r5r_core = baseline,
+  origins = block_points,
+  destinations = park_points,
+  mode = c("WALK"),
+  departure_datetime = ymd_hms("2026-05-01 08:00:00")
+)
+
+walk_access = tt_walk |>
+  group_by(from_id) |>
+  summarize(walk_access_30 = any(travel_time_p50 <=30, na.rm = TRUE))
+
+block_census = block_census |>
+  left_join(walk_access, by = c("GEOID" = "from_id"))
+```
+
+Mapping my transit time matrix
+```{r}
+block_transit_map = block_census |>
+  mutate(GEOID = as.character(GEOID)) |>
+  left_join(transit_access, by = c("GEOID" = "from_id"))
+
+#| fig-cap: Mapping Accessibility to Parks by Transit
+#| label: fig-1
+ggplot()+
+  geom_sf(data = block_transit_map, aes(fill = transit_access_30.x))+
+  geom_sf(data = parks, fill = "darkgreen", size = 0.2)+
+  scale_fill_manual(
+    values = c("TRUE" = "lightblue", "FALSE" = "gray"),
+    name = "Park within 30 min transit"
+  )
+```
+
+```{r}
+block_walk_map = block_census |>
+  mutate(GEOID = as.character(GEOID)) |>
+  left_join(walk_access, by = c("GEOID" = "from_id"))
+
+#|fig-cap: Mapping Accessibility to Parks by Walking
+#| label: fig-2
+ggplot()+
+  geom_sf(data = block_walk_map, aes(fill = walk_access_30.x))+
+  geom_sf(data = parks, fill = "darkgreen", size = 0.2)+
+  scale_fill_manual(
+    values = c("TRUE" = "lightblue", "FALSE" = "gray"),
+    name = "Park within 30 min walking"
+  )
+```
+
+```{r}
+block_car_map = block_census |>
+  mutate(GEOID = as.character(GEOID)) |>
+  left_join(car_access, by = c("GEOID" = "from_id"))
+
+#|fig-cap: Mapping Accessibility to Parks by Car
+#| label: fig-3
+ggplot()+
+  geom_sf(data = block_car_map, aes(fill = car_access_30.x))+
+  geom_sf(data = parks, fill = "darkgreen", size = 0.2)+
+  scale_fill_manual(
+    values = c("TRUE" = "lightblue", "FALSE" = "gray"),
+    name = "Park within 30 min drive in car"
+  )
+```
+
+Calculating Income Variables
+
+Low Income Households
+```{r}
+
+#accessible by transit
+low_income_transit_access = block_census |>
+  st_drop_geometry() |>
+  filter(transit_access_30 == TRUE) |>
+  summarize(
+    pct_low_income_access_transit =
+      sum(households_income_less_than_35k, na.rm = TRUE) /
+      sum(total_households, na.rm = TRUE) * 100,
+  )
+
+head(low_income_access_transit)
+```
+
+```{r}
+
+#accessible by car
+low_income_car_access = block_census |>
+  st_drop_geometry() |>
+  summarize(
+    pct_low_income_access_car =
+      sum(households_income_less_than_35k[car_access_30 == TRUE], na.rm = TRUE) /
+      sum(total_households[car_access_30 == TRUE], na.rm = TRUE) * 100,
+    pct_no_car_access = 
+      sum(zero_vehicle_households[car_access_30 == TRUE], na.rm=TRUE)/
+      sum(total_households[car_access_30 == TRUE], na.rm = TRUE) * 100,
+    pct_total_pop_access = 
+      sum(total_households[car_access_30 == TRUE], na.rm = TRUE)/
+      sum(total_households, na.rm = TRUE) * 100,
+    pct_low_income_access_compareall_low = 
+      sum(households_income_less_than_35k[car_access_30 == TRUE], na.rm = TRUE)/
+      sum(households_income_less_than_35k)*100
+  )
+
+
+
+head(low_income_car_access)
+```
+
+```{r}
+
+#accessible by walking
+walk_access_metrics = block_census |>
+  st_drop_geometry() |>
+  summarize(
+    pct_low_income_access_walk =
+      sum(households_income_less_than_35k[walk_access_30 == TRUE], na.rm = TRUE) /
+      sum(total_households, na.rm = TRUE) * 100,
+    pct_low_income_no_car_or_access = 
+      sum(zero_vehicle_households[walk_access_30 == FALSE], na.rm = TRUE) / 
+      sum(total_households [walk_access_30 == FALSE], na.rm = TRUE)* 100, 
+    pct_access_walk = sum(total_households[walk_access_30 == TRUE])/ sum(total_households) * 100
+  )
+
+head(walk_access_metrics)
+#When looking at those without access to parks by walking, XX % also does not have a car. 
+```
+
+```{r}
+block_access <- block_census |>
+  mutate(GEOID = as.character(GEOID)) |>
+  left_join(transit_access, by = c("GEOID" = "from_id")) |>
+  mutate(transit_access_30 = replace_na(transit_access_30.x, FALSE))
+
+access_metrics = block_access |>
+  st_drop_geometry() |>
+  summarize(
+    pct_low_income_with_access = sum(households_income_less_than_35k[transit_access_30 == TRUE], na.rm = TRUE)/
+     sum(total_households) * 100,
+    pct_zero_vehicle_households = sum(zero_vehicle_households, na.rm = TRUE) / sum(total_households, na.rm = TRUE) * 100,
+    pct_zero_vehicles_with_access = sum(zero_vehicle_households[transit_access_30 == TRUE], na.rm = TRUE) / sum(total_households)* 100
+  )
+
+head(access_metrics)
+
+#This represents the percent of the population with access who are low income. I also calculated the total percentage of households with zero vehicles. Then I calculated that 1% of the population has access to a park and does not have a car. 
+#should i somehow calculate the pct of low income households with zero vehicles?
+```
+
