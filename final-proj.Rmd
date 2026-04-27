@@ -26,6 +26,7 @@ library(ggspatial)
 library(sf)
 library(lehdr)
 library(tigris)
+library(tidycensus)
 ```
 ## Building Network
 
@@ -39,12 +40,60 @@ baseline = build_network(here::here("data/baseline"))
 ```
 
 ```{r}
-block_groups = st_read(here::here("data/baseline/orange_durham_wake_block_groups.gpkg"))
-census = read.csv(here::here("data/baseline/triangle_census.csv"))
+block_groups = get_acs(
+  geography = "block group",
+  state = "NC",
+  county = "Wake",
+  variables = c(
+    total_households = "B11001_001",
+    low_income = "B19001_002",   # <10k
+    low_income2 = "B19001_003",  # 10–15k
+    low_income3 = "B19001_004",  # 15–20k
+    low_income4 = "B19001_005",  # 20–25k
+    low_income5 = "B19001_006",  # 25–30k
+    low_income6 = "B19001_007"   # 30–35k
+), year = 2022,
+geometry = TRUE)
 ```
+
+Creating zero vehicle households variable
+
+```{r}
+vehicle_data = get_acs(
+  geography = "block group",
+  state = "NC",
+  county = "Wake",
+  variables = c(zero_vehicle = "B08201_002"),
+  year = 2022,
+  geometry = FALSE
+)
+vehicle_df <- vehicle_data |>
+  select(GEOID, zero_vehicle = estimate)
+
+block_census <- block_census |>
+  mutate(GEOID = as.character(GEOID)) |>
+  left_join(vehicle_df, by = "GEOID")
+```
+
+```{r}
+census = block_census |>
+  left_join(vehicle_data, select(GEOID, estimate), by = "GEOID") |>
+  rename(zero_vehicle = estimate)
+```
+
+```{r}
+block_groups = block_groups |>
+  mutate(GEOID = as.character(GEOID))
+
+census = census |>
+  mutate(GEOID = as.character(GEOID)) 
+
+```
+
 ```{r}
 census = census |>
-  mutate(GEOID = as.character(GEOID))
+  mutate(GEOID = as.character(GEOID)) |>
+    st_drop_geometry()
 
 block_groups = block_groups |>
   mutate(GEOID = as.character(GEOID))
@@ -63,21 +112,51 @@ parks = st_transform(parks, 32119)
 block_census = st_transform(block_census, 32119)
 highways = st_transform(highways, 32119)
 ```
-
+Adding Less than 35k Variable to group low income together
 ```{r}
+block_census = block_groups |>
+  select(GEOID, NAME, variable, estimate, geometry) |>
+  pivot_wider(
+    names_from = variable,
+    values_from = estimate
+  )
+block_census = block_census |>
+  mutate(
+    low_income_35k = low_income + low_income2 + low_income3 +
+      low_income4 + low_income5 + low_income6,
+    pct_low_income = low_income_35k / total_households * 100
+  )
+block_census = block_groups_wide
+
+raleigh_boundary = places(state = "NC", year = 2022) |>
+  filter(NAME == "Raleigh") |>
+  st_transform(st_crs(block_census))
+
 block_census |>
-  summarize( 
-    min_value = min(INTPTLAT, na.rm=TRUE),
-    max_value = max(INTPTLAT, na.rm=TRUE)) |>
-  ungroup()
+  st_intersection(raleigh_boundary)
+
+block_points = block_census |>
+  st_point_on_surface() |>
+  st_transform(4326) |>
+  mutate(id = as.character(GEOID)) |>
+  select(id, geometry)
+
+
 ```
 
+
+
 ```{r}
-block_census |>
-  summarize( 
-    min_value = min(INTPTLON, na.rm=TRUE),
-    max_value = max(INTPTLON, na.rm=TRUE)) |>
-  ungroup()
+st_bbox(block_census)
+
+```
+```{r}
+coords = st_coordinates(st_centroid(block_census))
+min(coords[,1])  
+max(coords[,1]) 
+min(coords[,2])  
+max(coords[,2])  
+
 ```
 
 @fig-1 shows a map of all City of Raleigh Parks
@@ -114,7 +193,8 @@ tt_transit = travel_time_matrix(
   origins = block_points,
   destinations = park_points,
   mode = c("WALK", "TRANSIT"),
-  departure_datetime = ymd_hms("2026-05-01 08:00:00")
+  departure_datetime = ymd_hms("2026-05-01 08:00:00"),
+  time_window =
 )
 
 transit_access = tt_transit |>
@@ -222,11 +302,11 @@ low_income_transit_access = block_census |>
   filter(transit_access_30 == TRUE) |>
   summarize(
     pct_low_income_access_transit =
-      sum(households_income_less_than_35k, na.rm = TRUE) /
+      sum(low_income_35k, na.rm = TRUE) /
       sum(total_households, na.rm = TRUE) * 100,
   )
 
-head(low_income_access_transit)
+head(low_income_transit_access)
 ```
 
 ```{r}
@@ -236,17 +316,17 @@ low_income_car_access = block_census |>
   st_drop_geometry() |>
   summarize(
     pct_low_income_access_car =
-      sum(households_income_less_than_35k[car_access_30 == TRUE], na.rm = TRUE) /
+      sum(low_income_35k[car_access_30 == TRUE], na.rm = TRUE) /
       sum(total_households[car_access_30 == TRUE], na.rm = TRUE) * 100,
     pct_no_car_access = 
-      sum(zero_vehicle_households[car_access_30 == TRUE], na.rm=TRUE)/
+      sum(zero_vehicle[car_access_30 == TRUE], na.rm=TRUE)/
       sum(total_households[car_access_30 == TRUE], na.rm = TRUE) * 100,
     pct_total_pop_access = 
       sum(total_households[car_access_30 == TRUE], na.rm = TRUE)/
       sum(total_households, na.rm = TRUE) * 100,
     pct_low_income_access_compareall_low = 
-      sum(households_income_less_than_35k[car_access_30 == TRUE], na.rm = TRUE)/
-      sum(households_income_less_than_35k)*100
+      sum(low_income_35k[car_access_30 == TRUE], na.rm = TRUE)/
+      sum(low_income_35k)*100
   )
 
 
@@ -261,10 +341,10 @@ walk_access_metrics = block_census |>
   st_drop_geometry() |>
   summarize(
     pct_low_income_access_walk =
-      sum(households_income_less_than_35k[walk_access_30 == TRUE], na.rm = TRUE) /
+      sum(low_income_35k[walk_access_30 == TRUE], na.rm = TRUE) /
       sum(total_households, na.rm = TRUE) * 100,
     pct_low_income_no_car_or_access = 
-      sum(zero_vehicle_households[walk_access_30 == FALSE], na.rm = TRUE) / 
+      sum(zero_vehicle[walk_access_30 == FALSE], na.rm = TRUE) / 
       sum(total_households [walk_access_30 == FALSE], na.rm = TRUE)* 100, 
     pct_access_walk = sum(total_households[walk_access_30 == TRUE])/ sum(total_households) * 100
   )
@@ -282,10 +362,10 @@ block_access <- block_census |>
 access_metrics = block_access |>
   st_drop_geometry() |>
   summarize(
-    pct_low_income_with_access = sum(households_income_less_than_35k[transit_access_30 == TRUE], na.rm = TRUE)/
+    pct_low_income_with_access = sum(low_income_35k[transit_access_30 == TRUE], na.rm = TRUE)/
      sum(total_households) * 100,
-    pct_zero_vehicle_households = sum(zero_vehicle_households, na.rm = TRUE) / sum(total_households, na.rm = TRUE) * 100,
-    pct_zero_vehicles_with_access = sum(zero_vehicle_households[transit_access_30 == TRUE], na.rm = TRUE) / sum(total_households)* 100
+    pct_zero_vehicle_households = sum(zero_vehicle, na.rm = TRUE) / sum(total_households, na.rm = TRUE) * 100,
+    pct_zero_vehicles_with_access = sum(zero_vehicle[transit_access_30 == TRUE], na.rm = TRUE) / sum(total_households)* 100
   )
 
 head(access_metrics)
